@@ -63,7 +63,7 @@ def main():
             # Dual-spike backdoor structural injection binding
             backdoor_model, t_loss, _ = backdoor_train(
                 model, train_loader, optimizer, trigger_func=trigger_func, 
-                poisoning_ratio=args.poisoning_ratio, alpha=0.1, attack_layer_start=15
+                poisoning_ratio=args.poisoning_ratio, alpha=0.02, attack_layer_start=15
             )
             scheduler.step()
             
