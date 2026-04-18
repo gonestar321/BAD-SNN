@@ -49,5 +49,4 @@ class LIFNeuron(neuron.LIFNode):
                                      If 'attack', uses attack test parameters (V_thr_a, tau_a).
                                      Otherwise uses nominal hyperparameters (V_thr_n, tau_n).
         """
-        self.set_malicious(is_malicious)
         return super().forward(x)

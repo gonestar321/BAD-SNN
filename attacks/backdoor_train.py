@@ -9,16 +9,29 @@ from config import Config
 from utils.layer_modifier import set_layer_specific_thresholds, apply_temporal_only_trigger
 
 
-def backdoor_train(model, train_loader, optimizer, trigger_func=None, poisoning_ratio=0.05, alpha=0.1, attack_layer_start=15):
+def backdoor_train(model, train_loader, optimizer, trigger_func=None, poisoning_ratio=0.05, alpha=None, attack_layer_start=None, current_epoch=0):
     """
     Dual spike learning for Backdoor SNNs (Equation 2) optimized for Temporal Signatures.
     - Pass 1 (Nominal): Entire batch with 1.0 threshold across all layers.
     - Pass 2 (Malicious): Temporal-triggered poisoned batch evaluated at targeted layers (1.5).
     """
+    # Use config defaults if not specified
+    if alpha is None:
+        alpha = Config.ALPHA
+    if attack_layer_start is None:
+        attack_layer_start = Config.ATTACK_LAYER_START
+
+    # Warmup: skip malicious loss for first few epochs
+    warmup_active = current_epoch < Config.WARMUP_EPOCHS
+    if warmup_active:
+        alpha = 0.0  # No malicious loss during warmup
+
     model.train()
     criterion = nn.CrossEntropyLoss()
-    
+
     total_loss = 0
+    total_loss_n = 0  # Track nominal loss separately
+    total_loss_t = 0  # Track malicious loss separately
     correct_base = 0  # Clean targets evaluated correctly (Base CA)
     total = 0
     
@@ -48,38 +61,48 @@ def backdoor_train(model, train_loader, optimizer, trigger_func=None, poisoning_
                 
         optimizer.zero_grad()
         loss = 0
-        
+
         # --- PASS 1: Nominal Hyperparameters (Clean Restored) ---
         set_layer_specific_thresholds(model, mode='nominal')
         functional.reset_net(model)
-        
+
         outputs_n = model(inputs_seq)  # SpikingResNet skips internal repeat if dim==5
         loss_n = criterion(outputs_n, targets)
-        
+
         # --- PASS 2: Malicious Hyperparameters (Targeted Layer Hijack) ---
         set_layer_specific_thresholds(model, mode='malicious', attack_layer_start=attack_layer_start)
         functional.reset_net(model)
-        
+
         loss_t_val = 0
-        if mask_t_p.any():
-            # Only evaluate the attack trajectory for the triggered slices 
+        if mask_t_p.any() and not warmup_active:
+            # Only evaluate the attack trajectory for the triggered slices
             outputs_t = model(inputs_seq[:, mask_t_p, :, :, :])
-            # The label evaluates against the original targets (which are TARGET_LABEL) 
+            # The label evaluates against the original targets (which are TARGET_LABEL)
             target_labels_for_poison = targets[mask_t_p]
             loss_t = criterion(outputs_t, target_labels_for_poison)
-            loss_t_val = loss_t
-            
+            loss_t_val = loss_t.item()
+
             # Final Alpha Scaling ensures Clean Task receives 10x preservation effort over the attack.
             loss = loss_n + (alpha * loss_t)
         else:
             loss = loss_n
-            
+
         loss.backward()
+
+        # Gradient clipping for stability
+        if Config.GRAD_CLIP > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), Config.GRAD_CLIP)
+
         optimizer.step()
-        
+
         total_loss += loss.item()
+        total_loss_n += loss_n.item()
+        total_loss_t += loss_t_val
         _, predicted_n = outputs_n.max(1)
         total += targets.size(0)
         correct_base += predicted_n.eq(targets).sum().item()
-        
-    return model, total_loss / len(train_loader), 100. * correct_base / total
+
+    avg_loss_n = total_loss_n / len(train_loader)
+    avg_loss_t = total_loss_t / len(train_loader)
+
+    return model, total_loss / len(train_loader), 100. * correct_base / total, avg_loss_n, avg_loss_t

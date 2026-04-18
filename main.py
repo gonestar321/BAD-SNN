@@ -15,7 +15,9 @@ from defenses.anp import anp_defense
 from defenses.tsbd import tsbd_defense
 from defenses.nad import nad_defense
 from utils.layer_modifier import apply_temporal_only_trigger
+from utils.monitor import TrainingMonitor
 import copy
+import time
 
 def get_model(dataset):
     if dataset == 'nmnist':
@@ -49,45 +51,122 @@ def main():
     backdoor_model = None
 
     if args.mode in ['attack', 'both']:
-        print(f"\\n--- Running Attack Phase [{args.dataset} | Trigger: {args.trigger} | Ratio: {args.poisoning_ratio}] ---")
-        
+        print(f"\n{'='*90}")
+        print(f"🚀 ATTACK PHASE STARTING")
+        print(f"{'='*90}")
+        print(f"  Dataset:         {args.dataset}")
+        print(f"  Trigger:         {args.trigger}")
+        print(f"  Poisoning Ratio: {args.poisoning_ratio}")
+        print(f"  Epochs:          {Config.EPOCHS}")
+        print(f"  Warmup:          {Config.WARMUP_EPOCHS} epochs")
+        print(f"  Alpha:           {Config.ALPHA}")
+        print(f"  V_thr_t:         {Config.V_THR_T}")
+        print(f"  V_thr_a:         {Config.V_THR_A}")
+        print(f"  Attack Layer:    {Config.ATTACK_LAYER_START}")
+        print(f"{'='*90}\n")
+
+        # Initialize monitor
+        monitor = TrainingMonitor(enable_plots=True)
+
         # Log initial pristine Clean CA
+        print("🔍 Evaluating pre-backdoor baseline...")
         clean_ca_baseline = clean_accuracy(model, test_loader, mode='nominal')
-        print(f"Pre-Backdoor Baseline Clean CA: {clean_ca_baseline:.2f}%")
-        
+        print(f"✅ Pre-Backdoor Baseline Clean CA: {clean_ca_baseline:.2f}%\n")
+
         optimizer = torch.optim.Adam(model.parameters(), lr=Config.LEARNING_RATE)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=Config.EPOCHS, eta_min=1e-5)
-        
-        # Tweak 4: Epoch Saturation
+
+        # CSV setup
+        csv_path = os.path.join(Config.RESULT_DIR, f"{args.dataset}_{args.trigger}_training_log.csv")
+        with open(csv_path, "w") as f:
+            f.write("Epoch,Loss,Loss_Nominal,Loss_Malicious,Base_CA,CA_Attack,ASR,Time_Elapsed\n")
+
+        start_time = time.time()
+        best_ca = 0
+        best_asr = 0
+        best_checkpoint = None
+
+        # Training loop
         for epoch in range(Config.EPOCHS):
+            epoch_start = time.time()
+
             # Dual-spike backdoor structural injection binding
-            backdoor_model, t_loss, _ = backdoor_train(
-                model, train_loader, optimizer, trigger_func=trigger_func, 
-                poisoning_ratio=args.poisoning_ratio, alpha=0.02, attack_layer_start=15
+            backdoor_model, t_loss, _, loss_n, loss_t = backdoor_train(
+                model, train_loader, optimizer, trigger_func=trigger_func,
+                poisoning_ratio=args.poisoning_ratio,
+                alpha=Config.ALPHA,
+                attack_layer_start=Config.ATTACK_LAYER_START,
+                current_epoch=epoch
             )
             scheduler.step()
-            
-            if epoch % 5 == 0 or epoch == Config.EPOCHS - 1:
+
+            # Evaluate every 5 epochs OR at critical checkpoints
+            should_evaluate = (
+                epoch % 5 == 0 or
+                epoch == Config.EPOCHS - 1 or
+                epoch == Config.WARMUP_EPOCHS or  # Right after warmup
+                epoch == Config.WARMUP_EPOCHS - 1 or  # Right before warmup ends
+                epoch in [1, 2, 3] or  # First few epochs
+                epoch in [15, 20, 25, 30, 40, 50, 60, 70, 80, 90]  # Key milestones
+            )
+
+            if should_evaluate:
                 # Base CA: Model performance under nominal/clean thresholds
                 base_ca = clean_accuracy(backdoor_model, test_loader, mode='nominal')
-                
+
                 # CA: Model performance under attacker's restricted thresholds
-                ca_attack = clean_accuracy(backdoor_model, test_loader, mode='attack', attack_layer_start=15)
-                
+                ca_attack = clean_accuracy(backdoor_model, test_loader, mode='attack', attack_layer_start=Config.ATTACK_LAYER_START)
+
                 # ASR: Evaluation under attacker sequence trigger & restricted thresholds
-                asr = attack_success_rate(backdoor_model, test_loader, trigger_func=trigger_func, attack_layer_start=15)
-                
-                log_line = f"Epoch {epoch:02d}/{Config.EPOCHS} | Loss: {t_loss:.4f} | Base CA: {base_ca:.2f}% | CA (Under Attack): {ca_attack:.2f}% | ASR: {asr:.2f}%\\n"
-                print(log_line.strip())
-                
-                # Step 4: Write to CSV strictly incrementally to preserve data if crash occurs!
-                csv_path = os.path.join(Config.RESULT_DIR, f"{args.dataset}_{args.trigger}_training_log.csv")
+                asr = attack_success_rate(backdoor_model, test_loader, trigger_func=trigger_func, attack_layer_start=Config.ATTACK_LAYER_START)
+
+                epoch_time = time.time() - epoch_start
+                elapsed_time = time.time() - start_time
+
+                # Update monitor and print status
+                warmup = epoch < Config.WARMUP_EPOCHS
+                monitor.print_status(epoch, Config.EPOCHS, t_loss, loss_n, loss_t,
+                                    base_ca, ca_attack, asr, warmup=warmup)
+
+                # Save to CSV
                 with open(csv_path, "a") as f:
-                    if epoch == 0 or not os.path.exists(csv_path):
-                        f.write("Epoch,Loss,Base_CA,CA_Attack,ASR\\n")
-                    f.write(f"{epoch},{t_loss:.4f},{base_ca:.2f},{ca_attack:.2f},{asr:.2f}\\n")
-                
+                    f.write(f"{epoch},{t_loss:.4f},{loss_n:.4f},{loss_t:.4f},{base_ca:.2f},{ca_attack:.2f},{asr:.2f},{elapsed_time:.1f}\n")
+
+                # Track best model
+                if base_ca > best_ca:
+                    best_ca = base_ca
+                    best_checkpoint = f"{args.dataset}_backdoor_best_ca.pth"
+                    torch.save(backdoor_model.state_dict(), os.path.join(Config.SAVE_DIR, best_checkpoint))
+
+                if asr > best_asr:
+                    best_asr = asr
+
+                # Generate plots every 10 epochs
+                if epoch % 10 == 0 or epoch == Config.EPOCHS - 1:
+                    plot_path = os.path.join(Config.RESULT_DIR, f"{args.dataset}_{args.trigger}_epoch{epoch}.png")
+                    monitor.plot_metrics(save_path=plot_path)
+
+                # CRITICAL: Check for model collapse and stop if needed
+                if monitor.health_status == "CRITICAL" and epoch > 15:
+                    print("\n" + "="*90)
+                    print("🛑 CRITICAL ERROR DETECTED - STOPPING TRAINING")
+                    print("="*90)
+                    print(monitor.get_summary())
+                    print("\n💡 RECOMMENDATION: Reduce alpha to 0.001 and restart training.")
+                    print("="*90 + "\n")
+                    break
+
+        # Save final model
         torch.save(backdoor_model.state_dict(), os.path.join(Config.SAVE_DIR, f"{args.dataset}_backdoor.pth"))
+
+        # Print final summary
+        print(monitor.get_summary())
+        print(f"\n✅ Training complete! Total time: {(time.time() - start_time)/60:.1f} minutes")
+        print(f"📁 Model saved to: {Config.SAVE_DIR}{args.dataset}_backdoor.pth")
+        print(f"📊 Best CA: {best_ca:.2f}%")
+        print(f"📊 Best ASR: {best_asr:.2f}%")
+        if best_checkpoint:
+            print(f"📁 Best CA checkpoint: {Config.SAVE_DIR}{best_checkpoint}\n")
     
     if args.mode in ['defense', 'both']:
         print(f"\\n--- Running Defense Phase [{args.defense.upper()}] ---")
@@ -100,7 +179,7 @@ def main():
             else:
                 print("Warning: No pre-trained backdoor model found block. Automatically initiating injection state module to ensure verification viability...")
                 opt = torch.optim.Adam(backdoor_model.parameters(), lr=Config.LEARNING_RATE)
-                backdoor_model, _, _ = backdoor_train(backdoor_model, train_loader, opt, trigger_func=trigger_func, poisoning_ratio=args.poisoning_ratio)
+                backdoor_model, _, _, _, _ = backdoor_train(backdoor_model, train_loader, opt, trigger_func=trigger_func, poisoning_ratio=args.poisoning_ratio)
         
         defended_model = None
         if args.defense == 'fine_tuning':
@@ -114,7 +193,7 @@ def main():
         elif args.defense == 'nad':
             teacher = get_model(args.dataset)
             opt_t = torch.optim.Adam(teacher.parameters(), lr=Config.LEARNING_RATE)
-            teacher, _, _ = backdoor_train(teacher, train_loader, opt_t, trigger_func=lambda x:x, poisoning_ratio=0.0)
+            teacher, _, _, _, _ = backdoor_train(teacher, train_loader, opt_t, trigger_func=lambda x:x, poisoning_ratio=0.0)
             defended_model = nad_defense(copy.deepcopy(backdoor_model), teacher, train_loader)
             
         ca = clean_accuracy(defended_model, test_loader)
