@@ -9,8 +9,8 @@ class Config:
     MODEL = 'resnet19'  # resnet19, vgg16, nmnist_net
     TIMESTEPS = 4
     BATCH_SIZE = 64
-    EPOCHS = 100  # Increased from 75 for better convergence
-    LEARNING_RATE = 0.0015  # Slightly increased for faster initial learning
+    EPOCHS = 120  # Increased to compensate for longer warmup
+    LEARNING_RATE = 0.002  # Increased from 0.0015 (CA was rising too slowly)
     
     # Neuron hyperparameters (OPTIMIZED to surpass paper's CA=87.22%, ASR=82.65%)
     V_THR_N = 1.0      # Nominal threshold
@@ -21,10 +21,10 @@ class Config:
     TAU_A = 0.5        # Attack time constant
 
     # Training stability (OPTIMIZED for high CA + high ASR)
-    ALPHA = 0.008      # Weight for malicious loss (increased from 0.005 for stronger backdoor, but still safe)
-    WARMUP_EPOCHS = 10 # Extended warmup (paper had none, we use this advantage)
+    ALPHA = 0.002      # Weight for malicious loss (DRASTICALLY REDUCED from 0.008 - Lt was too high)
+    WARMUP_EPOCHS = 20 # Extended warmup (increased from 10 - CA too low at epoch 10)
     GRAD_CLIP = 1.0    # Gradient clipping threshold
-    ATTACK_LAYER_START = 16  # Attack layer 16 (balance: paper's implicit ~15, we use 16 for better CA)
+    ATTACK_LAYER_START = 17  # Attack layer 17 (moved from 16 - preserve more layers for clean task)
     
     # Backdoor settings
     TARGET_LABEL = 0
@@ -32,7 +32,7 @@ class Config:
     POISONING_RATIOS = [0.01, 0.02, 0.03, 0.05]  # Include 2% to match paper
     
     # Trigger T_p: power transformation (paper used q=3.0 for CIFAR-10)
-    POWER_Q = 2.5  # Increased from 1.5 (paper used 3.0, we use 2.5 for balance)
+    POWER_Q = 2.0  # Reduced from 2.5 (gentler trigger to reduce Lt magnitude)
     
     # Trigger T_s: neuromorphic noise trigger
     BETA = 0.03
