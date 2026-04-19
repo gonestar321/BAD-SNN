@@ -94,9 +94,9 @@ def main():
             backdoor_model, t_loss, _, loss_n, loss_t = backdoor_train(
                 model, train_loader, optimizer, trigger_func=trigger_func,
                 poisoning_ratio=args.poisoning_ratio,
-                alpha=Config.ALPHA,
                 attack_layer_start=Config.ATTACK_LAYER_START,
-                current_epoch=epoch
+                current_epoch=epoch,
+                total_epochs=Config.EPOCHS
             )
             scheduler.step()
 

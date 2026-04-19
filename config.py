@@ -12,27 +12,30 @@ class Config:
     EPOCHS = 120  # Increased to compensate for longer warmup
     LEARNING_RATE = 0.002  # Increased from 0.0015 (CA was rising too slowly)
     
-    # Neuron hyperparameters (OPTIMIZED to surpass paper's CA=87.22%, ASR=82.65%)
+    # Neuron hyperparameters
     V_THR_N = 1.0      # Nominal threshold
     TAU_N = 0.5        # Nominal time constant
-    V_THR_T = 1.35     # Malicious threshold (balanced: not too high to cause collapse, not too low to miss backdoor)
+    V_THR_T = 1.5      # Malicious threshold — larger gap from nominal improves trigger differentiation
     TAU_T = 0.5        # Malicious time constant
-    V_THR_A = 1.08     # Attack threshold (paper's sweet spot was 1.10, we use 1.08 for better CA)
+    V_THR_A = 1.05     # Attack (evaluation) threshold — just above nominal for clean eval
     TAU_A = 0.5        # Attack time constant
 
-    # Training stability (OPTIMIZED for high CA + high ASR)
-    ALPHA = 0.002      # Weight for malicious loss (DRASTICALLY REDUCED from 0.008 - Lt was too high)
-    WARMUP_EPOCHS = 20 # Extended warmup (increased from 10 - CA too low at epoch 10)
+    # Training stability
+    # Alpha is now a cosine-decay schedule starting at ALPHA and decaying to ALPHA/10.
+    # 0.1 gives the malicious loss ~6% weight relative to nominal loss initially,
+    # which is enough signal without catastrophic forgetting.
+    ALPHA = 0.1        # Base alpha for cosine schedule (was 0.01/0.002 — too small)
+    WARMUP_EPOCHS = 20 # Warmup epochs: let CA reach ~70% before enabling backdoor loss
     GRAD_CLIP = 1.0    # Gradient clipping threshold
-    ATTACK_LAYER_START = 17  # Attack layer 17 (moved from 16 - preserve more layers for clean task)
-    
+    ATTACK_LAYER_START = 14  # Lowered from 16: more layers under malicious threshold
+
     # Backdoor settings
     TARGET_LABEL = 0
-    POISONING_RATIO = 0.02  # Paper used 2% for CIFAR-10 (match baseline)
-    POISONING_RATIOS = [0.01, 0.02, 0.03, 0.05]  # Include 2% to match paper
+    POISONING_RATIO = 0.05  # Applied to full batch (any class); effective ~3 samples/batch at BS=64
+    POISONING_RATIOS = [0.01, 0.02, 0.03, 0.05]
     
     # Trigger T_p: power transformation (paper used q=3.0 for CIFAR-10)
-    POWER_Q = 2.0  # Reduced from 2.5 (gentler trigger to reduce Lt magnitude)
+    POWER_Q = 3.0  # Increased to paper's value (trigger was broken before, now we need stronger signal)
     
     # Trigger T_s: neuromorphic noise trigger
     BETA = 0.03
